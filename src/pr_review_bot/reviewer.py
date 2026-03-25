@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Callable
 
 from .config import BotConfig
 from .diff_parser import build_changed_line_map, build_review_chunks, filter_reviewable_patches, parse_unified_diff
@@ -15,13 +16,19 @@ from .repository_context import load_repository_snippets
 LOGGER = logging.getLogger(__name__)
 
 
+class ReviewAbortedError(RuntimeError):
+    pass
+
+
 def run_review(
     repo_root: Path,
     pr_context: PullRequestContext,
     config: BotConfig,
     *,
     head_revision: str,
+    should_abort: Callable[[], bool] | None = None,
 ) -> ReviewReport:
+    _raise_if_aborted(should_abort)
     raw_diff = build_unified_diff(
         repo_root=repo_root,
         base_revision=pr_context.base_sha,
@@ -54,6 +61,7 @@ def run_review(
     chunks, chunk_redactions = redact_chunks(chunks, config.security)
     repository_snippets, snippet_redactions = redact_repository_snippets(repository_snippets, config.security)
     redaction_count = pr_redactions + chunk_redactions + snippet_redactions
+    _raise_if_aborted(should_abort)
     llm = LLMClient(config.review)
 
     summary_points: list[str] = []
@@ -63,7 +71,9 @@ def run_review(
     models_used: list[str] = []
 
     for chunk in chunks:
+        _raise_if_aborted(should_abort)
         response, model_used = llm.review_chunk(safe_context, chunk, repository_snippets)
+        _raise_if_aborted(should_abort)
         models_used.append(model_used)
         chunk_summary, chunk_findings, chunk_inline_comments, chunk_tests = response.to_domain()
         summary_points.extend(chunk_summary)
@@ -171,3 +181,8 @@ def _dedupe_strings(items: list[str]) -> list[str]:
         seen.add(normalized)
         result.append(normalized)
     return result
+
+
+def _raise_if_aborted(should_abort: Callable[[], bool] | None) -> None:
+    if should_abort and should_abort():
+        raise ReviewAbortedError("Review aborted because a newer pull request head superseded this job.")

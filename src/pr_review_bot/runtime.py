@@ -5,6 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on"}
+
+
 def load_dotenv_file(path: str | Path = ".env") -> None:
     dotenv_path = Path(path).expanduser()
     if not dotenv_path.is_file():
@@ -51,10 +58,14 @@ class AppSettings:
     host: str
     port: int
     max_parallel_reviews: int
+    max_pending_reviews: int
+    max_repo_active_reviews: int
+    cancel_superseded_reviews: bool
     git_fetch_timeout_seconds: int
     git_fetch_depth: int
     github_api_url: str
     github_api_version: str
+    public_base_url: str
     log_level: str
 
     @classmethod
@@ -82,9 +93,13 @@ class AppSettings:
             host=os.getenv("HOST", "0.0.0.0"),
             port=int(os.getenv("PORT", "8000")),
             max_parallel_reviews=max(1, int(os.getenv("MAX_PARALLEL_REVIEWS", "4"))),
+            max_pending_reviews=max(1, int(os.getenv("MAX_PENDING_REVIEWS", "32"))),
+            max_repo_active_reviews=max(1, int(os.getenv("MAX_REPO_ACTIVE_REVIEWS", "6"))),
+            cancel_superseded_reviews=_env_bool("CANCEL_SUPERSEDED_REVIEWS", True),
             git_fetch_timeout_seconds=max(30, int(os.getenv("GIT_FETCH_TIMEOUT_SECONDS", "180"))),
             git_fetch_depth=max(1, int(os.getenv("GIT_FETCH_DEPTH", "1"))),
             github_api_url=os.getenv("GITHUB_API_URL", "https://api.github.com"),
             github_api_version=os.getenv("GITHUB_API_VERSION", "2026-03-10"),
+            public_base_url=os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
         )

@@ -41,6 +41,7 @@ class ReviewJob:
     omitted_sections: int = 0
     redaction_count: int = 0
     check_run_id: int | None = None
+    superseded_by_head_sha: str = ""
     error_message: str = ""
     summary_points_json: str = "[]"
 
@@ -93,6 +94,7 @@ class ReviewJobStore:
                     omitted_sections INTEGER NOT NULL DEFAULT 0,
                     redaction_count INTEGER NOT NULL DEFAULT 0,
                     check_run_id INTEGER,
+                    superseded_by_head_sha TEXT NOT NULL DEFAULT '',
                     error_message TEXT NOT NULL DEFAULT '',
                     summary_points_json TEXT NOT NULL DEFAULT '[]'
                 )
@@ -104,6 +106,7 @@ class ReviewJobStore:
             self._ensure_column(connection, "omitted_sections", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(connection, "redaction_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(connection, "check_run_id", "INTEGER")
+            self._ensure_column(connection, "superseded_by_head_sha", "TEXT NOT NULL DEFAULT ''")
 
     def _ensure_column(self, connection: sqlite3.Connection, column_name: str, column_type: str) -> None:
         columns = {
@@ -149,8 +152,8 @@ class ReviewJobStore:
                     pull_number, base_sha, head_sha, status, created_at, updated_at,
                     started_at, completed_at, findings_count, inline_comments_count, analyzed_files_count,
                     model_used, provider, chunk_count, omitted_sections, redaction_count, check_run_id,
-                    error_message, summary_points_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    superseded_by_head_sha, error_message, summary_points_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -176,6 +179,7 @@ class ReviewJobStore:
                     job.omitted_sections,
                     job.redaction_count,
                     job.check_run_id,
+                    job.superseded_by_head_sha,
                     job.error_message,
                     job.summary_points_json,
                 ),
@@ -226,6 +230,20 @@ class ReviewJobStore:
             ).fetchall()
         return [_row_to_job(row) for row in rows]
 
+    def count_jobs(self, *, statuses: tuple[str, ...], repo_full_name: str | None = None) -> int:
+        filtered_statuses = tuple(dict.fromkeys(statuses))
+        if not filtered_statuses:
+            return 0
+        placeholders = ", ".join("?" for _ in filtered_statuses)
+        query = f"SELECT COUNT(*) AS count FROM review_jobs WHERE status IN ({placeholders})"
+        params: list[object] = list(filtered_statuses)
+        if repo_full_name:
+            query += " AND repo_full_name = ?"
+            params.append(repo_full_name)
+        with self._connect() as connection:
+            row = connection.execute(query, params).fetchone()
+        return int(row["count"] if row else 0)
+
     def metrics_summary(self) -> dict[str, Any]:
         with self._connect() as connection:
             counts = {
@@ -254,7 +272,7 @@ class ReviewJobStore:
 
     def mark_running(self, job_id: str) -> None:
         now = _utc_now()
-        self._update_status(job_id, "running", started_at=now, updated_at=now)
+        self._update_status(job_id, "running", started_at=now, updated_at=now, superseded_by_head_sha="")
 
     def set_check_run_id(self, job_id: str, check_run_id: int) -> None:
         self._update_status(job_id, "running", updated_at=_utc_now(), check_run_id=check_run_id)
@@ -274,17 +292,105 @@ class ReviewJobStore:
             chunk_count=report.chunk_count,
             omitted_sections=report.omitted_sections,
             redaction_count=report.redaction_count,
+            superseded_by_head_sha="",
             summary_points_json=json.dumps(report.summary_points),
             error_message="",
         )
 
     def mark_skipped(self, job_id: str, reason: str) -> None:
         now = _utc_now()
-        self._update_status(job_id, "skipped", updated_at=now, completed_at=now, error_message=reason)
+        self._update_status(
+            job_id,
+            "skipped",
+            updated_at=now,
+            completed_at=now,
+            superseded_by_head_sha="",
+            error_message=reason,
+        )
+
+    def mark_rejected(self, job_id: str, reason: str) -> None:
+        now = _utc_now()
+        self._update_status(
+            job_id,
+            "rejected",
+            updated_at=now,
+            completed_at=now,
+            superseded_by_head_sha="",
+            error_message=reason,
+        )
+
+    def mark_superseded(self, job_id: str, *, reason: str, superseded_by_head_sha: str) -> None:
+        now = _utc_now()
+        self._update_status(
+            job_id,
+            "superseded",
+            updated_at=now,
+            completed_at=now,
+            error_message=reason,
+            superseded_by_head_sha=superseded_by_head_sha,
+        )
 
     def mark_failed(self, job_id: str, error_message: str) -> None:
         now = _utc_now()
-        self._update_status(job_id, "failed", updated_at=now, completed_at=now, error_message=error_message)
+        self._update_status(
+            job_id,
+            "failed",
+            updated_at=now,
+            completed_at=now,
+            superseded_by_head_sha="",
+            error_message=error_message,
+        )
+
+    def supersede_pull_jobs(
+        self,
+        *,
+        repo_full_name: str,
+        pull_number: int,
+        exclude_job_id: str,
+        new_head_sha: str,
+    ) -> list[ReviewJob]:
+        now = _utc_now()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM review_jobs
+                WHERE repo_full_name = ?
+                  AND pull_number = ?
+                  AND job_id != ?
+                  AND head_sha != ?
+                  AND status IN ('queued', 'running')
+                ORDER BY created_at DESC
+                """,
+                (repo_full_name, pull_number, exclude_job_id, new_head_sha),
+            ).fetchall()
+            if not rows:
+                return []
+            connection.execute(
+                """
+                UPDATE review_jobs
+                SET status = 'superseded',
+                    updated_at = ?,
+                    completed_at = ?,
+                    error_message = ?,
+                    superseded_by_head_sha = ?
+                WHERE repo_full_name = ?
+                  AND pull_number = ?
+                  AND job_id != ?
+                  AND head_sha != ?
+                  AND status IN ('queued', 'running')
+                """,
+                (
+                    now,
+                    now,
+                    "Superseded because a newer commit was queued for this pull request.",
+                    new_head_sha,
+                    repo_full_name,
+                    pull_number,
+                    exclude_job_id,
+                    new_head_sha,
+                ),
+            )
+        return [_row_to_job(row) for row in rows]
 
     def _update_status(self, job_id: str, status: str, **fields: object) -> None:
         columns = ["status = ?"]
@@ -323,6 +429,7 @@ def _row_to_job(row: sqlite3.Row) -> ReviewJob:
         omitted_sections=row["omitted_sections"],
         redaction_count=row["redaction_count"],
         check_run_id=row["check_run_id"],
+        superseded_by_head_sha=row["superseded_by_head_sha"],
         error_message=row["error_message"],
         summary_points_json=row["summary_points_json"],
     )

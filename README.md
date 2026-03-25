@@ -1,204 +1,254 @@
 # AI PR Review Bot
 
-Multi-tenant AI pull request review service built in Python. This version is designed as a global service: you deploy one backend, register one GitHub App, install that app on many repositories, and the service reviews PRs across all of them.
+Production-grade AI pull request review bot built in Python.
 
-## What changed
+This repository is designed for the GitHub App model: you deploy one backend, install one GitHub App on many repositories, and the service reviews pull requests across all of them. It also keeps a local CLI path for single-repo testing and self-hosted experiments.
 
-The original repo-local GitHub Action path still exists as a self-hosted fallback in [.github/workflows/ai-pr-review.yml](./.github/workflows/ai-pr-review.yml), but the main architecture is now a GitHub App service:
+## What This Repository Does
 
-1. GitHub sends `pull_request` webhooks to the service.
-2. The backend verifies the webhook signature.
-3. The backend mints a GitHub App installation token for the specific tenant repo.
-4. It fetches the PR head from `refs/pull/<number>/head`, checks out the code in a temporary workspace, and loads that repo's `.ai-review.yml`.
-5. The review engine chunks the diff, calls the OpenAI Responses API, validates structured output, and builds summary plus inline review comments.
-6. It posts comments and a check run back to the PR as the GitHub App bot account.
+When a pull request is opened, synchronized, reopened, or marked ready for review:
 
-## Architecture
+1. GitHub sends a webhook to this service.
+2. The service verifies the signature and creates a review job.
+3. The worker fetches the PR safely from `refs/pull/<number>/head`.
+4. The review engine chunks the diff, redacts likely secrets, loads repository context, and sends the review prompt to an LLM.
+5. The bot posts a summary comment, optional inline review comments, and a GitHub check run back to the PR.
 
-### Core components
+## Visual Overview
 
-- [src/pr_review_bot/server.py](./src/pr_review_bot/server.py)
-  - FastAPI webhook server
-  - `/webhooks/github`
-  - `/healthz`
-  - `/metrics`
-  - `/jobs`
-  - `/jobs/{job_id}`
-- [src/pr_review_bot/review_service.py](./src/pr_review_bot/review_service.py)
-  - background review execution
-  - stale-delivery detection
-  - GitHub posting
-  - check run lifecycle
-- [src/pr_review_bot/github_app.py](./src/pr_review_bot/github_app.py)
-  - GitHub App JWT auth
-  - installation access token creation
-- [src/pr_review_bot/checkout.py](./src/pr_review_bot/checkout.py)
-  - safe PR checkout from the target repo
-- [src/pr_review_bot/storage.py](./src/pr_review_bot/storage.py)
-  - sqlite-backed job persistence
-- [src/pr_review_bot/reviewer.py](./src/pr_review_bot/reviewer.py)
-  - diff extraction, chunking, LLM review orchestration
-- [src/pr_review_bot/llm_client.py](./src/pr_review_bot/llm_client.py)
-  - OpenAI integration with retries and fallback model support
+```mermaid
+flowchart LR
+    PR[Pull Request Event] --> GH[GitHub App Webhook]
+    GH --> API[FastAPI Server]
+    API --> Store[(SQLite Job Store)]
+    API --> Service[Review Service]
+    Service --> Auth[GitHub App Auth]
+    Service --> Checkout[Safe PR Checkout]
+    Service --> Reviewer[Review Engine]
+    Reviewer --> Diff[Diff Parser + Chunker]
+    Reviewer --> Redaction[Secret Redaction]
+    Reviewer --> Context[Repository Context Loader]
+    Reviewer --> LLM[OpenAI or Gemini]
+    Service --> GitHub[GitHub REST API]
+    GitHub --> Output[Summary Comment + Inline Review + Check Run]
+```
 
-## GitHub App setup
+```mermaid
+sequenceDiagram
+    participant GitHub
+    participant Server as FastAPI Server
+    participant Store as Job Store
+    participant Worker as Review Service
+    participant App as GitHub App Auth
+    participant Repo as Target Repository
+    participant Model as LLM Provider
 
-Create a GitHub App and configure it with:
+    GitHub->>Server: POST /webhooks/github
+    Server->>Store: create job
+    Server-->>GitHub: 202 Accepted
+    Worker->>Store: mark running
+    Worker->>App: mint installation token
+    Worker->>Repo: fetch PR head safely
+    Worker->>Model: review diff chunks
+    Worker->>GitHub: post summary comment
+    Worker->>GitHub: post inline review
+    Worker->>GitHub: complete check run
+    Worker->>Store: mark completed
+```
 
-- Webhook URL: `https://your-domain.com/webhooks/github`
-- Webhook secret: a strong random secret
-- Repository permissions:
-  - `Contents: Read-only`
-  - `Checks: Read & write`
-  - `Pull requests: Read & write`
-  - `Issues: Read & write`
-  - `Metadata: Read-only`
-- Subscribe to:
-  - `Pull request`
+More detailed architecture notes live in [docs/architecture.md](./docs/architecture.md).
 
-After that, install the app on any repository or organization you want the service to review.
+## How To Use It
 
-Because reviews are posted with an installation token, the comments show up as an actual bot review from your GitHub App instead of `github-actions[bot]`.
+### Option 1: Global GitHub App Service
 
-## Environment
+This is the main production path.
 
-Copy [.env.example](./.env.example) to `.env` and fill in:
-
-- `LLM_PROVIDER`
-- `OPENAI_API_KEY` for OpenAI
-- or `GOOGLE_API_KEY` for Gemini
-- `GITHUB_APP_ID`
-- `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_PATH`
-- `GITHUB_WEBHOOK_SECRET`
-- `DATABASE_URL`
-- `WORKSPACE_ROOT`
-
-Important: `GITHUB_APP_PRIVATE_KEY_PATH` must point to the `.pem` file you download from your GitHub App settings page. The example path `./github-app.private-key.pem` is only a placeholder until you save the real key there.
-
-For PR diff accuracy, `GIT_FETCH_DEPTH` should usually be at least `32`. The service will deepen history automatically when it needs a merge base for `git diff base...head`.
-
-Current LLM providers:
-
-- `openai`: uses the OpenAI Responses API
-- `gemini`: uses Google's OpenAI-compatible `chat.completions` endpoint with structured parsing
-
-## Local development
-
-### 1. Install dependencies
+1. Create a GitHub App with:
+   - `Contents: Read-only`
+   - `Checks: Read & write`
+   - `Pull requests: Read & write`
+   - `Issues: Read & write`
+   - `Metadata: Read-only`
+   - webhook event: `Pull request`
+2. Copy [.env.example](./.env.example) to `.env` and fill in:
+   - `GITHUB_APP_ID`
+   - `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_PATH`
+   - `GITHUB_WEBHOOK_SECRET`
+   - `OPENAI_API_KEY` or `GOOGLE_API_KEY`
+3. Install dependencies:
 
 ```bash
 python3 -m pip install -e .
 ```
 
-### 2. Start the review server
+4. Start the service:
 
 ```bash
-set -a
-source .env
-set +a
-
 ai-pr-review-server
 ```
 
-Or:
-
-```bash
-uvicorn pr_review_bot.server:app --host 0.0.0.0 --port 8000
-```
-
-### 3. Expose the webhook locally
-
-Use ngrok, Cloudflare Tunnel, or another reverse tunnel:
+5. Expose the server publicly:
 
 ```bash
 ngrok http 8000
 ```
 
-Then paste the public URL into the GitHub App webhook settings.
+6. Put the public URL into your GitHub App webhook settings:
 
-## Docker deployment
+```text
+https://your-public-domain/webhooks/github
+```
 
-Build and run:
+7. Install the GitHub App on one or more repositories.
+8. Open or update a pull request.
+9. The bot will post:
+   - a summary PR comment
+   - inline review comments on changed lines
+   - a GitHub check run
+
+### Option 2: Local Single-Repo CLI Review
+
+This is useful when you want to test prompts and formatting without the full GitHub App flow.
+
+```bash
+ai-pr-review --repo-root . --event-path "$GITHUB_EVENT_PATH"
+```
+
+### Option 3: Docker Deployment
 
 ```bash
 docker build -t ai-pr-review .
 docker run --env-file .env -p 8000:8000 ai-pr-review
 ```
 
-The container installs `git` because the service performs PR fetch and checkout operations for target repositories.
+## What You See In GitHub
 
-## Repo-level configuration
+The bot behaves like a real PR review bot, not just a log printer.
 
-Each installed repository can still define its own `.ai-review.yml` to control safe review behavior:
+- A summary comment is added to the pull request conversation.
+- Inline comments can appear directly on changed lines.
+- A check run shows progress and final conclusion:
+  - `success`
+  - `neutral`
+  - `action_required`
+  - `failure`
 
-- model selection
-- fallback model
-- temperature
-- chunk sizing
-- inline comment limits
-- ignored files
-- repository context files
-- check run naming
-- secret redaction behavior
+If `PUBLIC_BASE_URL` is set, the check run can also link back to this service's job detail endpoint.
 
-For service safety, repo config is not allowed to override GitHub API destination settings.
+## Repository Map
 
-## API
+If you are new to the codebase, this is the fastest way to orient yourself.
 
-### `POST /webhooks/github`
+| Path | Responsibility | Open This When |
+| --- | --- | --- |
+| `src/pr_review_bot/server.py` | FastAPI app, webhooks, health/readiness, metrics | You want to understand the HTTP surface |
+| `src/pr_review_bot/review_service.py` | Background orchestration, queueing, cancellation, GitHub posting | You want the end-to-end job lifecycle |
+| `src/pr_review_bot/reviewer.py` | Diff review pipeline and report building | You want to understand how a PR becomes findings |
+| `src/pr_review_bot/llm_client.py` | OpenAI/Gemini calls, retries, fallback logic | You want to change provider behavior |
+| `src/pr_review_bot/github_app.py` | GitHub App JWT and installation tokens | You are debugging auth |
+| `src/pr_review_bot/github_api.py` | Posting comments, reviews, check runs | You are debugging GitHub output |
+| `src/pr_review_bot/checkout.py` | Safe checkout of PR refs | You are debugging git fetch or merge-base issues |
+| `src/pr_review_bot/storage.py` | SQLite job persistence and queue state | You want job history or metrics |
+| `src/pr_review_bot/config.py` | `.ai-review.yml` parsing and defaults | You want to change bot behavior safely |
+| `src/pr_review_bot/runtime.py` | `.env` loading and service settings | You want to change runtime knobs |
+| `src/pr_review_bot/webhooks.py` | webhook verification and request extraction | You are debugging webhook intake |
+| `src/pr_review_bot/redaction.py` | secret masking before model calls | You are reviewing data safety |
+| `tests/` | unit coverage for parser, storage, runtime, redaction, LLM helpers | You want guardrails before changing behavior |
 
-Receives GitHub App webhook deliveries.
+## Review Job Lifecycle
 
-### `GET /healthz`
-
-Simple liveness endpoint.
-
-### `GET /jobs/{job_id}`
-
-Returns review job status:
-
-- `queued`
-- `running`
-- `completed`
-- `skipped`
-- `failed`
-
-### `GET /jobs`
-
-Returns recent review jobs across repositories.
-
-### `GET /repos/{owner}/{repo}/pulls/{pull_number}/jobs`
-
-Returns recent review jobs for one pull request.
-
-### `GET /metrics`
-
-Prometheus-style fleet metrics for job counts, findings, inline comments, and secret redactions.
-
-## How it looks on GitHub
-
-The service posts:
-
-- a summary comment in the PR conversation
-- an inline PR review on changed lines when the model returns line-level findings
-- a GitHub check run with `success`, `neutral`, `action_required`, or `failure`
-
-That means it appears like a real review bot in the GitHub UI, attached to the PR and authored by the GitHub App.
-
-## Security notes
-
-- Webhook deliveries are verified with `X-Hub-Signature-256`.
-- The service uses short-lived GitHub App installation tokens per review job.
-- The repo checkout uses `git fetch` against the base repository's PR ref instead of executing untrusted CI code.
-- Likely secrets in PR metadata, diffs, and repository context are redacted before those inputs are sent to the LLM.
-- Repo config cannot redirect the service to a different GitHub API host.
-
-## Self-hosted single-repo mode
-
-If you want the older per-repository GitHub Action mode, the CLI path still works:
-
-```bash
-ai-pr-review --repo-root . --event-path "$GITHUB_EVENT_PATH"
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    queued --> running
+    queued --> rejected
+    queued --> superseded
+    running --> completed
+    running --> failed
+    running --> superseded
+    running --> skipped
+    completed --> [*]
+    failed --> [*]
+    rejected --> [*]
+    superseded --> [*]
+    skipped --> [*]
 ```
 
-That mode is useful for experiments, but the GitHub App server is the real global path.
+Important runtime behavior:
+
+- newer commits on the same PR can supersede older queued or running jobs
+- queue limits protect LLM spend under webhook bursts
+- stale jobs can abort before posting outdated comments
+- likely secrets are redacted before model calls
+
+## Configuration
+
+### Runtime `.env`
+
+Important service-level settings:
+
+- `LLM_PROVIDER`
+- `OPENAI_API_KEY` or `GOOGLE_API_KEY`
+- `GITHUB_APP_ID`
+- `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_PATH`
+- `GITHUB_WEBHOOK_SECRET`
+- `DATABASE_URL`
+- `WORKSPACE_ROOT`
+- `MAX_PARALLEL_REVIEWS`
+- `MAX_PENDING_REVIEWS`
+- `MAX_REPO_ACTIVE_REVIEWS`
+- `CANCEL_SUPERSEDED_REVIEWS`
+- `PUBLIC_BASE_URL`
+
+### Per-Repository `.ai-review.yml`
+
+Installed repositories can customize:
+
+- model and fallback model
+- diff chunk sizing
+- inline comment and issue limits
+- ignore rules
+- repository context files
+- secret redaction behavior
+
+For safety, repository config cannot redirect GitHub API hosts.
+
+## HTTP Endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /webhooks/github` | Receives GitHub App webhook deliveries |
+| `GET /healthz` | Basic liveness probe |
+| `GET /readyz` | Queue-aware readiness probe |
+| `GET /jobs` | Recent jobs across all repositories |
+| `GET /jobs/{job_id}` | One job's status and summary |
+| `GET /repos/{owner}/{repo}/pulls/{pull_number}/jobs` | Job history for a pull request |
+| `GET /metrics` | Prometheus-style metrics |
+
+## Local Development
+
+```bash
+python3 -m pip install -e .
+ai-pr-review-server
+```
+
+Then in another terminal:
+
+```bash
+curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:8000/readyz
+curl http://127.0.0.1:8000/metrics
+```
+
+## Security Notes
+
+- Webhooks are verified with `X-Hub-Signature-256`.
+- GitHub access uses short-lived installation tokens.
+- The checkout path fetches code but does not execute untrusted PR workflows.
+- Potential secrets in PR metadata, diff content, and repository snippets are redacted before LLM review.
+- Superseding stale jobs reduces outdated feedback and wasted model spend.
+
+## Self-Hosted Single-Repo Mode
+
+The older per-repository GitHub Action path still exists at [.github/workflows/ai-pr-review.yml](./.github/workflows/ai-pr-review.yml). That mode is useful for experiments, but the GitHub App service is the main path for multi-repo deployments.

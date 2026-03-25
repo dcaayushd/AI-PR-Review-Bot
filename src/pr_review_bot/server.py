@@ -27,7 +27,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="AI PR Review",
-        version="0.2.0",
+        version="0.3.0",
         summary="GitHub App webhook service for AI pull request reviews",
     )
     app.state.settings = runtime_settings
@@ -41,6 +41,18 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     @app.get("/healthz")
     async def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readiness() -> JSONResponse:
+        snapshot = service.runtime_snapshot()
+        status_code = 200 if snapshot["queue_accepting"] else 503
+        return JSONResponse(
+            {
+                "status": "ready" if status_code == 200 else "degraded",
+                **snapshot,
+            },
+            status_code=status_code,
+        )
 
     @app.get("/jobs/{job_id}")
     async def get_job(job_id: str) -> dict[str, Any]:
@@ -63,11 +75,18 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     @app.get("/metrics")
     async def metrics() -> PlainTextResponse:
         summary = store.metrics_summary()
+        snapshot = service.runtime_snapshot()
         lines = [
             f'ai_pr_review_total_jobs {summary["total_jobs"]}',
             f'ai_pr_review_total_findings {summary["total_findings"]}',
             f'ai_pr_review_total_inline_comments {summary["total_inline_comments"]}',
             f'ai_pr_review_total_redactions {summary["total_redactions"]}',
+            f'ai_pr_review_running_jobs {snapshot["running_jobs"]}',
+            f'ai_pr_review_queued_jobs {snapshot["queued_jobs"]}',
+            f'ai_pr_review_max_parallel_reviews {snapshot["max_parallel_reviews"]}',
+            f'ai_pr_review_max_pending_reviews {snapshot["max_pending_reviews"]}',
+            f'ai_pr_review_max_repo_active_reviews {snapshot["max_repo_active_reviews"]}',
+            f'ai_pr_review_queue_accepting {1 if snapshot["queue_accepting"] else 0}',
         ]
         for status, count in sorted(summary["counts_by_status"].items()):
             lines.append(f'ai_pr_review_jobs_status{{status="{status}"}} {count}')
@@ -119,7 +138,7 @@ def _create_default_app() -> FastAPI:
         LOGGER.warning("Server app loaded in placeholder mode: %s", exc)
         placeholder = FastAPI(
             title="AI PR Review",
-            version="0.2.0",
+            version="0.3.0",
             summary="Placeholder app until runtime configuration is valid",
         )
 
@@ -129,6 +148,16 @@ def _create_default_app() -> FastAPI:
                 "status": "misconfigured",
                 "detail": str(exc),
             }
+
+        @placeholder.get("/readyz")
+        async def readiness() -> JSONResponse:
+            return JSONResponse(
+                {
+                    "status": "misconfigured",
+                    "detail": str(exc),
+                },
+                status_code=503,
+            )
 
         return placeholder
 
