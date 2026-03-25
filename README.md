@@ -11,7 +11,7 @@ The original repo-local GitHub Action path still exists as a self-hosted fallbac
 3. The backend mints a GitHub App installation token for the specific tenant repo.
 4. It fetches the PR head from `refs/pull/<number>/head`, checks out the code in a temporary workspace, and loads that repo's `.ai-review.yml`.
 5. The review engine chunks the diff, calls the OpenAI Responses API, validates structured output, and builds summary plus inline review comments.
-6. Its posts the review back to the PR as the GitHub App bot account.
+6. It posts comments and a check run back to the PR as the GitHub App bot account.
 
 ## Architecture
 
@@ -21,11 +21,14 @@ The original repo-local GitHub Action path still exists as a self-hosted fallbac
   - FastAPI webhook server
   - `/webhooks/github`
   - `/healthz`
+  - `/metrics`
+  - `/jobs`
   - `/jobs/{job_id}`
 - [src/pr_review_bot/review_service.py](./src/pr_review_bot/review_service.py)
   - background review execution
   - stale-delivery detection
   - GitHub posting
+  - check run lifecycle
 - [src/pr_review_bot/github_app.py](./src/pr_review_bot/github_app.py)
   - GitHub App JWT auth
   - installation access token creation
@@ -46,6 +49,7 @@ Create a GitHub App and configure it with:
 - Webhook secret: a strong random secret
 - Repository permissions:
   - `Contents: Read-only`
+  - `Checks: Read & write`
   - `Pull requests: Read & write`
   - `Issues: Read & write`
   - `Metadata: Read-only`
@@ -134,6 +138,8 @@ Each installed repository can still define its own `.ai-review.yml` to control s
 - inline comment limits
 - ignored files
 - repository context files
+- check run naming
+- secret redaction behavior
 
 For service safety, repo config is not allowed to override GitHub API destination settings.
 
@@ -157,12 +163,25 @@ Returns review job status:
 - `skipped`
 - `failed`
 
+### `GET /jobs`
+
+Returns recent review jobs across repositories.
+
+### `GET /repos/{owner}/{repo}/pulls/{pull_number}/jobs`
+
+Returns recent review jobs for one pull request.
+
+### `GET /metrics`
+
+Prometheus-style fleet metrics for job counts, findings, inline comments, and secret redactions.
+
 ## How it looks on GitHub
 
 The service posts:
 
 - a summary comment in the PR conversation
 - an inline PR review on changed lines when the model returns line-level findings
+- a GitHub check run with `success`, `neutral`, `action_required`, or `failure`
 
 That means it appears like a real review bot in the GitHub UI, attached to the PR and authored by the GitHub App.
 
@@ -171,6 +190,7 @@ That means it appears like a real review bot in the GitHub UI, attached to the P
 - Webhook deliveries are verified with `X-Hub-Signature-256`.
 - The service uses short-lived GitHub App installation tokens per review job.
 - The repo checkout uses `git fetch` against the base repository's PR ref instead of executing untrusted CI code.
+- Likely secrets in PR metadata, diffs, and repository context are redacted before those inputs are sent to the LLM.
 - Repo config cannot redirect the service to a different GitHub API host.
 
 ## Self-hosted single-repo mode

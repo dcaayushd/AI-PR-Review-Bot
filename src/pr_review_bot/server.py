@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from .review_service import ReviewService
 from .runtime import AppSettings
@@ -48,6 +48,30 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         if not job:
             raise HTTPException(status_code=404, detail="Job not found.")
         return job.as_dict()
+
+    @app.get("/jobs")
+    async def list_jobs(limit: int = 20) -> list[dict[str, Any]]:
+        return [job.as_dict() for job in store.list_jobs(limit=limit)]
+
+    @app.get("/repos/{owner}/{repo}/pulls/{pull_number}/jobs")
+    async def list_pull_jobs(owner: str, repo: str, pull_number: int, limit: int = 20) -> list[dict[str, Any]]:
+        return [
+            job.as_dict()
+            for job in store.list_jobs_for_pull(repo_full_name=f"{owner}/{repo}", pull_number=pull_number, limit=limit)
+        ]
+
+    @app.get("/metrics")
+    async def metrics() -> PlainTextResponse:
+        summary = store.metrics_summary()
+        lines = [
+            f'ai_pr_review_total_jobs {summary["total_jobs"]}',
+            f'ai_pr_review_total_findings {summary["total_findings"]}',
+            f'ai_pr_review_total_inline_comments {summary["total_inline_comments"]}',
+            f'ai_pr_review_total_redactions {summary["total_redactions"]}',
+        ]
+        for status, count in sorted(summary["counts_by_status"].items()):
+            lines.append(f'ai_pr_review_jobs_status{{status="{status}"}} {count}')
+        return PlainTextResponse("\n".join(lines) + "\n")
 
     @app.post("/webhooks/github")
     async def github_webhook(request: Request) -> JSONResponse:

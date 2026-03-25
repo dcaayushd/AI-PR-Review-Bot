@@ -89,6 +89,61 @@ class GitHubClient:
             raise GitHubAPIError("Unexpected response when fetching pull request details.")
         return response
 
+    def create_check_run(
+        self,
+        *,
+        name: str,
+        head_sha: str,
+        status: str,
+        external_id: str | None = None,
+        started_at: str | None = None,
+        details_url: str | None = None,
+        output: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": name,
+            "head_sha": head_sha,
+            "status": status,
+        }
+        if external_id:
+            payload["external_id"] = external_id
+        if started_at:
+            payload["started_at"] = started_at
+        if details_url:
+            payload["details_url"] = details_url
+        if output:
+            payload["output"] = output
+        response = self._request("POST", f"/repos/{self._repo_full_name}/check-runs", json=payload)
+        if not isinstance(response, dict):
+            raise GitHubAPIError("Unexpected response when creating a check run.")
+        return response
+
+    def update_check_run(
+        self,
+        *,
+        check_run_id: int,
+        status: str | None = None,
+        conclusion: str | None = None,
+        completed_at: str | None = None,
+        details_url: str | None = None,
+        output: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if status:
+            payload["status"] = status
+        if conclusion:
+            payload["conclusion"] = conclusion
+        if completed_at:
+            payload["completed_at"] = completed_at
+        if details_url:
+            payload["details_url"] = details_url
+        if output:
+            payload["output"] = output
+        response = self._request("PATCH", f"/repos/{self._repo_full_name}/check-runs/{check_run_id}", json=payload)
+        if not isinstance(response, dict):
+            raise GitHubAPIError("Unexpected response when updating a check run.")
+        return response
+
     def _issue_comments_path(self, pull_number: int) -> str:
         return f"/repos/{self._repo_full_name}/issues/{pull_number}/comments"
 

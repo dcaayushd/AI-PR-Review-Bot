@@ -77,7 +77,8 @@ class ReviewReport:
     suggested_tests: list[str] = field(default_factory=list)
     analyzed_files: list[str] = field(default_factory=list)
     skipped_files: list[str] = field(default_factory=list)
+    provider_used: str = ""
     model_used: str = ""
     chunk_count: int = 0
     omitted_sections: int = 0
-
+    redaction_count: int = 0

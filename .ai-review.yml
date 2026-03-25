@@ -37,6 +37,8 @@ github:
   api_version: "2026-03-10"
   update_summary_comment: true
   create_inline_review: true
+  create_check_run: true
+  check_run_name: AI PR Review
   request_timeout_seconds: 30
   retry_attempts: 3
 
@@ -51,3 +53,11 @@ repository_context:
     - "requirements*.txt"
     - ".github/workflows/*.yml"
 
+security:
+  redact_secrets: true
+  redaction_placeholder: "[REDACTED]"
+  secret_patterns:
+    - "AIza[0-9A-Za-z\\-_]{35}"
+    - "sk-[A-Za-z0-9_\\-]{20,}"
+    - "gh[pousr]_[A-Za-z0-9_]{20,}"
+    - "-----BEGIN [A-Z ]+PRIVATE KEY-----[\\s\\S]+?-----END [A-Z ]+PRIVATE KEY-----"

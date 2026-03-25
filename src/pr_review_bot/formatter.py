@@ -37,6 +37,8 @@ def build_summary_points(report: ReviewReport) -> list[str]:
         )
     if report.skipped_files:
         summary.append(f"Skipped {len(report.skipped_files)} file(s) due to ignore rules or binary content.")
+    if report.redaction_count:
+        summary.append(f"Redacted {report.redaction_count} likely secret value(s) before sending context to the model.")
     return summary[:6]
 
 
@@ -87,6 +89,8 @@ def format_summary_comment(report: ReviewReport, pr_context: PullRequestContext)
     lines.append(f"- Model(s): `{report.model_used or 'unknown'}`")
     lines.append(f"- Reviewable files: `{len(report.analyzed_files)}`")
     lines.append(f"- Inline comments prepared: `{len(report.inline_comments)}`")
+    if report.redaction_count:
+        lines.append(f"- Likely secrets redacted before LLM review: `{report.redaction_count}`")
     if report.skipped_files:
         lines.append(f"- Skipped files: `{', '.join(report.skipped_files[:10])}`")
     lines.append("</details>")
@@ -121,4 +125,3 @@ def _format_location(finding: ReviewFinding, pr_context: PullRequestContext) -> 
         return f" ([`{finding.file_path}:{finding.line}`]({url}))"
     url = f"https://github.com/{pr_context.repo_full_name}/blob/{pr_context.head_sha}/{finding.file_path}"
     return f" ([`{finding.file_path}`]({url}))"
-

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections import Counter
 from pathlib import Path
 
 from .config import BotConfig
@@ -10,6 +9,7 @@ from .domain import InlineComment, PullRequestContext, ReviewFinding, ReviewRepo
 from .formatter import build_summary_points
 from .git_utils import build_unified_diff
 from .llm_client import LLMClient
+from .redaction import redact_chunks, redact_pull_request_context, redact_repository_snippets
 from .repository_context import load_repository_snippets
 
 LOGGER = logging.getLogger(__name__)
@@ -50,6 +50,10 @@ def run_review(
         max_chunks=config.review.max_chunks,
     )
     repository_snippets = load_repository_snippets(repo_root, config.repository_context)
+    safe_context, pr_redactions = redact_pull_request_context(pr_context, config.security)
+    chunks, chunk_redactions = redact_chunks(chunks, config.security)
+    repository_snippets, snippet_redactions = redact_repository_snippets(repository_snippets, config.security)
+    redaction_count = pr_redactions + chunk_redactions + snippet_redactions
     llm = LLMClient(config.review)
 
     summary_points: list[str] = []
@@ -59,7 +63,7 @@ def run_review(
     models_used: list[str] = []
 
     for chunk in chunks:
-        response, model_used = llm.review_chunk(pr_context, chunk, repository_snippets)
+        response, model_used = llm.review_chunk(safe_context, chunk, repository_snippets)
         models_used.append(model_used)
         chunk_summary, chunk_findings, chunk_inline_comments, chunk_tests = response.to_domain()
         summary_points.extend(chunk_summary)
@@ -86,9 +90,11 @@ def run_review(
         suggested_tests=suggested_tests,
         analyzed_files=[patch.path for patch in reviewable_patches],
         skipped_files=skipped_files,
+        provider_used=config.review.provider,
         model_used=", ".join(_dedupe_strings(models_used)),
         chunk_count=len(chunks),
         omitted_sections=omitted_sections,
+        redaction_count=redaction_count,
     )
     return report
 

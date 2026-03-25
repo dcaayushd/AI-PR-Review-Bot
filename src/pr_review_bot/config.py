@@ -36,6 +36,13 @@ DEFAULT_CONTEXT_FILES = [
     ".github/workflows/*.yml",
 ]
 
+DEFAULT_SECRET_PATTERNS = [
+    r"AIza[0-9A-Za-z\-_]{35}",
+    r"sk-[A-Za-z0-9_\-]{20,}",
+    r"gh[pousr]_[A-Za-z0-9_]{20,}",
+    r"-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----",
+]
+
 
 @dataclass(slots=True)
 class ReviewSettings:
@@ -64,6 +71,8 @@ class GitHubSettings:
     api_version: str = "2026-03-10"
     update_summary_comment: bool = True
     create_inline_review: bool = True
+    create_check_run: bool = True
+    check_run_name: str = "AI PR Review"
     request_timeout_seconds: int = 30
     retry_attempts: int = 3
 
@@ -77,11 +86,19 @@ class RepositoryContextSettings:
 
 
 @dataclass(slots=True)
+class SecuritySettings:
+    redact_secrets: bool = True
+    redaction_placeholder: str = "[REDACTED]"
+    secret_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_SECRET_PATTERNS))
+
+
+@dataclass(slots=True)
 class BotConfig:
     review: ReviewSettings = field(default_factory=ReviewSettings)
     diff: DiffSettings = field(default_factory=DiffSettings)
     github: GitHubSettings = field(default_factory=GitHubSettings)
     repository_context: RepositoryContextSettings = field(default_factory=RepositoryContextSettings)
+    security: SecuritySettings = field(default_factory=SecuritySettings)
 
 
 def _as_dict(value: object) -> dict[str, object]:
@@ -112,6 +129,7 @@ def load_config(
     diff_data = _as_dict(payload.get("diff"))
     github_data = _as_dict(payload.get("github")) if allow_repo_github_settings else {}
     repository_context_data = _as_dict(payload.get("repository_context"))
+    security_data = _as_dict(payload.get("security"))
     provider = str(review_data.get("provider", _default_provider())).strip().lower()
     default_model = "gemini-2.5-flash" if provider == "gemini" else "gpt-5.4"
     default_fallback_model = "gemini-2.5-flash-lite" if provider == "gemini" else "gpt-5-mini"
@@ -143,6 +161,8 @@ def load_config(
             api_version=str(github_data.get("api_version", "2026-03-10")),
             update_summary_comment=bool(github_data.get("update_summary_comment", True)),
             create_inline_review=bool(github_data.get("create_inline_review", True)),
+            create_check_run=bool(github_data.get("create_check_run", True)),
+            check_run_name=str(github_data.get("check_run_name", "AI PR Review")),
             request_timeout_seconds=int(github_data.get("request_timeout_seconds", 30)),
             retry_attempts=int(github_data.get("retry_attempts", 3)),
         ),
@@ -151,6 +171,11 @@ def load_config(
             max_files=int(repository_context_data.get("max_files", 6)),
             max_chars_per_file=int(repository_context_data.get("max_chars_per_file", 3000)),
             include=list(repository_context_data.get("include", DEFAULT_CONTEXT_FILES)),
+        ),
+        security=SecuritySettings(
+            redact_secrets=bool(security_data.get("redact_secrets", True)),
+            redaction_placeholder=str(security_data.get("redaction_placeholder", "[REDACTED]")),
+            secret_patterns=list(security_data.get("secret_patterns", DEFAULT_SECRET_PATTERNS)),
         ),
     )
     return config
