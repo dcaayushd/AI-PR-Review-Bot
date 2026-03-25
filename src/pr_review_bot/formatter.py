@@ -17,6 +17,11 @@ def build_summary_points(report: ReviewReport) -> list[str]:
     summary: list[str] = [
         f"Analyzed {len(report.analyzed_files)} reviewable files across {report.chunk_count} diff chunk(s).",
     ]
+    if report.risk_reasons:
+        reasons = ", ".join(report.risk_reasons[:2])
+        summary.append(
+            f"Adaptive routing selected a {report.risk_level} risk profile (score {report.risk_score}) because it {reasons}."
+        )
     if severities["critical"]:
         summary.append(
             f"Risk level is high: found {severities['critical']} critical issue(s) that should be fixed before merge."
@@ -87,12 +92,15 @@ def format_summary_comment(report: ReviewReport, pr_context: PullRequestContext)
     lines.append("<summary>Review metadata</summary>")
     lines.append("")
     lines.append(f"- Model(s): `{report.model_used or 'unknown'}`")
+    lines.append(f"- Risk profile: `{report.risk_level}` (score `{report.risk_score}`)")
     lines.append(f"- Reviewable files: `{len(report.analyzed_files)}`")
     lines.append(f"- Inline comments prepared: `{len(report.inline_comments)}`")
     if report.redaction_count:
         lines.append(f"- Likely secrets redacted before LLM review: `{report.redaction_count}`")
     if report.skipped_files:
         lines.append(f"- Skipped files: `{', '.join(report.skipped_files[:10])}`")
+    if report.risk_reasons:
+        lines.append(f"- Risk reasons: `{'; '.join(report.risk_reasons[:3])}`")
     lines.append("</details>")
     return "\n".join(lines).strip()
 

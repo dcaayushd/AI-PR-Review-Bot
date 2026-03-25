@@ -93,12 +93,24 @@ class SecuritySettings:
 
 
 @dataclass(slots=True)
+class RoutingSettings:
+    enabled: bool = True
+    use_fallback_for_low_risk: bool = True
+    low_risk_reasoning_effort: str = "low"
+    medium_risk_reasoning_effort: str = "medium"
+    high_risk_reasoning_effort: str = "high"
+    high_risk_max_issues: int = 24
+    high_risk_max_inline_comments: int = 10
+
+
+@dataclass(slots=True)
 class BotConfig:
     review: ReviewSettings = field(default_factory=ReviewSettings)
     diff: DiffSettings = field(default_factory=DiffSettings)
     github: GitHubSettings = field(default_factory=GitHubSettings)
     repository_context: RepositoryContextSettings = field(default_factory=RepositoryContextSettings)
     security: SecuritySettings = field(default_factory=SecuritySettings)
+    routing: RoutingSettings = field(default_factory=RoutingSettings)
 
 
 def _as_dict(value: object) -> dict[str, object]:
@@ -130,6 +142,7 @@ def load_config(
     github_data = _as_dict(payload.get("github")) if allow_repo_github_settings else {}
     repository_context_data = _as_dict(payload.get("repository_context"))
     security_data = _as_dict(payload.get("security"))
+    routing_data = _as_dict(payload.get("routing"))
     provider = str(review_data.get("provider", _default_provider())).strip().lower()
     default_model = "gemini-2.5-flash" if provider == "gemini" else "gpt-5.4"
     default_fallback_model = "gemini-2.5-flash-lite" if provider == "gemini" else "gpt-5-mini"
@@ -176,6 +189,15 @@ def load_config(
             redact_secrets=bool(security_data.get("redact_secrets", True)),
             redaction_placeholder=str(security_data.get("redaction_placeholder", "[REDACTED]")),
             secret_patterns=list(security_data.get("secret_patterns", DEFAULT_SECRET_PATTERNS)),
+        ),
+        routing=RoutingSettings(
+            enabled=bool(routing_data.get("enabled", True)),
+            use_fallback_for_low_risk=bool(routing_data.get("use_fallback_for_low_risk", True)),
+            low_risk_reasoning_effort=str(routing_data.get("low_risk_reasoning_effort", "low")),
+            medium_risk_reasoning_effort=str(routing_data.get("medium_risk_reasoning_effort", "medium")),
+            high_risk_reasoning_effort=str(routing_data.get("high_risk_reasoning_effort", "high")),
+            high_risk_max_issues=int(routing_data.get("high_risk_max_issues", 24)),
+            high_risk_max_inline_comments=int(routing_data.get("high_risk_max_inline_comments", 10)),
         ),
     )
     return config

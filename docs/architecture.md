@@ -15,6 +15,7 @@ flowchart TB
         Server[FastAPI Server]
         Hooks[Webhook Verification]
         Status[Health / Ready / Metrics / Jobs]
+        Dashboard[HTML Dashboard]
     end
 
     subgraph Orchestration Layer
@@ -27,6 +28,7 @@ flowchart TB
     subgraph Review Layer
         Checkout[Safe Checkout]
         Diff[Diff Parser]
+        Risk[Risk Scoring + Routing]
         Context[Repository Context]
         Redaction[Secret Redaction]
         Prompts[Prompt Builder]
@@ -44,13 +46,15 @@ flowchart TB
     GH --> WH --> Server
     Server --> Hooks
     Server --> Status
+    Server --> Dashboard
     Server --> Service
     Service --> Store
     Service --> Queue
     Service --> Cancel
     Service --> Checkout
     Checkout --> Diff
-    Diff --> Context
+    Diff --> Risk
+    Risk --> Context
     Context --> Redaction
     Redaction --> Prompts
     Prompts --> LLM
@@ -69,9 +73,10 @@ flowchart TB
 4. `review_service.py` applies queue rules and can supersede older jobs for the same pull request.
 5. `github_app.py` mints an installation token for the target repository.
 6. `checkout.py` fetches the pull request head safely into a workspace.
-7. `reviewer.py` builds the diff, filters ignored files, loads repository context, redacts secrets, and calls `llm_client.py`.
+7. `reviewer.py` builds the diff, filters ignored files, scores risk, routes the review profile, loads repository context, redacts secrets, and calls `llm_client.py`.
 8. `github_api.py` posts comments and check runs back to GitHub.
-9. `storage.py` records the final job status and summary.
+9. `storage.py` records the final job status, persisted findings, and summary data.
+10. `dashboard.py` renders operator-facing HTML views over that stored state.
 
 ## Job States
 
@@ -119,6 +124,7 @@ This is the review pipeline. It should stay deterministic and side-effect light:
 
 - diff extraction
 - patch filtering
+- risk scoring and routing
 - chunk creation
 - secret redaction
 - model invocation
@@ -148,8 +154,10 @@ This gives the service memory:
 ```text
 src/pr_review_bot/
 ├── server.py              # FastAPI app and endpoints
+├── dashboard.py           # HTML dashboard and job detail rendering
 ├── review_service.py      # Background orchestration and queue logic
 ├── reviewer.py            # Review pipeline
+├── risk.py                # Risk scoring and adaptive model routing
 ├── llm_client.py          # LLM provider integration
 ├── github_app.py          # GitHub App authentication
 ├── github_api.py          # Comment/review/check-run posting

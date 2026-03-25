@@ -323,7 +323,7 @@ class ReviewService:
     def _details_url(self, job_id: str) -> str | None:
         if not self._settings.public_base_url:
             return None
-        return f"{self._settings.public_base_url}/jobs/{job_id}"
+        return f"{self._settings.public_base_url}/jobs/{job_id}/view"
 
 
 def _utc_now() -> str:

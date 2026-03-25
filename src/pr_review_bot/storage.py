@@ -16,6 +16,15 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _parse_iso8601(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 @dataclass(slots=True)
 class ReviewJob:
     job_id: str
@@ -40,16 +49,42 @@ class ReviewJob:
     chunk_count: int = 0
     omitted_sections: int = 0
     redaction_count: int = 0
+    risk_level: str = "medium"
+    risk_score: int = 0
     check_run_id: int | None = None
     superseded_by_head_sha: str = ""
+    risk_reasons_json: str = "[]"
+    findings_json: str = "[]"
+    suggested_tests_json: str = "[]"
+    analyzed_files_json: str = "[]"
+    skipped_files_json: str = "[]"
     error_message: str = ""
     summary_points_json: str = "[]"
 
     def as_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["summary_points"] = json.loads(self.summary_points_json or "[]")
+        payload["findings"] = json.loads(self.findings_json or "[]")
+        payload["suggested_tests"] = json.loads(self.suggested_tests_json or "[]")
+        payload["analyzed_files"] = json.loads(self.analyzed_files_json or "[]")
+        payload["skipped_files"] = json.loads(self.skipped_files_json or "[]")
+        payload["risk_reasons"] = json.loads(self.risk_reasons_json or "[]")
+        payload["duration_seconds"] = self.duration_seconds
         payload.pop("summary_points_json", None)
+        payload.pop("risk_reasons_json", None)
+        payload.pop("findings_json", None)
+        payload.pop("suggested_tests_json", None)
+        payload.pop("analyzed_files_json", None)
+        payload.pop("skipped_files_json", None)
         return payload
+
+    @property
+    def duration_seconds(self) -> float | None:
+        started = _parse_iso8601(self.started_at)
+        completed = _parse_iso8601(self.completed_at)
+        if started is None or completed is None:
+            return None
+        return max((completed - started).total_seconds(), 0.0)
 
 
 class ReviewJobStore:
@@ -93,8 +128,15 @@ class ReviewJobStore:
                     chunk_count INTEGER NOT NULL DEFAULT 0,
                     omitted_sections INTEGER NOT NULL DEFAULT 0,
                     redaction_count INTEGER NOT NULL DEFAULT 0,
+                    risk_level TEXT NOT NULL DEFAULT 'medium',
+                    risk_score INTEGER NOT NULL DEFAULT 0,
                     check_run_id INTEGER,
                     superseded_by_head_sha TEXT NOT NULL DEFAULT '',
+                    risk_reasons_json TEXT NOT NULL DEFAULT '[]',
+                    findings_json TEXT NOT NULL DEFAULT '[]',
+                    suggested_tests_json TEXT NOT NULL DEFAULT '[]',
+                    analyzed_files_json TEXT NOT NULL DEFAULT '[]',
+                    skipped_files_json TEXT NOT NULL DEFAULT '[]',
                     error_message TEXT NOT NULL DEFAULT '',
                     summary_points_json TEXT NOT NULL DEFAULT '[]'
                 )
@@ -105,8 +147,15 @@ class ReviewJobStore:
             self._ensure_column(connection, "chunk_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(connection, "omitted_sections", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(connection, "redaction_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(connection, "risk_level", "TEXT NOT NULL DEFAULT 'medium'")
+            self._ensure_column(connection, "risk_score", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(connection, "check_run_id", "INTEGER")
             self._ensure_column(connection, "superseded_by_head_sha", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "risk_reasons_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(connection, "findings_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(connection, "suggested_tests_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(connection, "analyzed_files_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(connection, "skipped_files_json", "TEXT NOT NULL DEFAULT '[]'")
 
     def _ensure_column(self, connection: sqlite3.Connection, column_name: str, column_type: str) -> None:
         columns = {
@@ -151,9 +200,10 @@ class ReviewJobStore:
                     job_id, delivery_id, event_name, action, installation_id, repo_full_name,
                     pull_number, base_sha, head_sha, status, created_at, updated_at,
                     started_at, completed_at, findings_count, inline_comments_count, analyzed_files_count,
-                    model_used, provider, chunk_count, omitted_sections, redaction_count, check_run_id,
-                    superseded_by_head_sha, error_message, summary_points_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    model_used, provider, chunk_count, omitted_sections, redaction_count, risk_level, risk_score,
+                    check_run_id, superseded_by_head_sha, risk_reasons_json, findings_json, suggested_tests_json,
+                    analyzed_files_json, skipped_files_json, error_message, summary_points_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -178,8 +228,15 @@ class ReviewJobStore:
                     job.chunk_count,
                     job.omitted_sections,
                     job.redaction_count,
+                    job.risk_level,
+                    job.risk_score,
                     job.check_run_id,
                     job.superseded_by_head_sha,
+                    job.risk_reasons_json,
+                    job.findings_json,
+                    job.suggested_tests_json,
+                    job.analyzed_files_json,
+                    job.skipped_files_json,
                     job.error_message,
                     job.summary_points_json,
                 ),
@@ -252,22 +309,63 @@ class ReviewJobStore:
                     "SELECT status, COUNT(*) AS count FROM review_jobs GROUP BY status"
                 ).fetchall()
             }
+            risk_counts = {
+                row["risk_level"]: row["count"]
+                for row in connection.execute(
+                    "SELECT risk_level, COUNT(*) AS count FROM review_jobs GROUP BY risk_level"
+                ).fetchall()
+            }
             totals = connection.execute(
                 """
                 SELECT
                     COUNT(*) AS total_jobs,
                     SUM(findings_count) AS total_findings,
                     SUM(inline_comments_count) AS total_inline_comments,
-                    SUM(redaction_count) AS total_redactions
+                    SUM(redaction_count) AS total_redactions,
+                    COUNT(DISTINCT repo_full_name) AS active_repositories,
+                    AVG(
+                        CASE
+                            WHEN started_at IS NOT NULL AND completed_at IS NOT NULL
+                            THEN (julianday(completed_at) - julianday(started_at)) * 86400.0
+                            ELSE NULL
+                        END
+                    ) AS avg_duration_seconds
                 FROM review_jobs
                 """
             ).fetchone()
+            providers = {
+                (row["provider"] or "unknown"): row["count"]
+                for row in connection.execute(
+                    """
+                    SELECT COALESCE(NULLIF(provider, ''), 'unknown') AS provider, COUNT(*) AS count
+                    FROM review_jobs
+                    GROUP BY COALESCE(NULLIF(provider, ''), 'unknown')
+                    """
+                ).fetchall()
+            }
+            repositories = [
+                {"repo_full_name": row["repo_full_name"], "job_count": int(row["job_count"])}
+                for row in connection.execute(
+                    """
+                    SELECT repo_full_name, COUNT(*) AS job_count
+                    FROM review_jobs
+                    GROUP BY repo_full_name
+                    ORDER BY job_count DESC, repo_full_name ASC
+                    LIMIT 5
+                    """
+                ).fetchall()
+            ]
         return {
             "counts_by_status": counts,
+            "counts_by_provider": providers,
+            "counts_by_risk": risk_counts,
             "total_jobs": int(totals["total_jobs"] or 0),
             "total_findings": int(totals["total_findings"] or 0),
             "total_inline_comments": int(totals["total_inline_comments"] or 0),
             "total_redactions": int(totals["total_redactions"] or 0),
+            "active_repositories": int(totals["active_repositories"] or 0),
+            "avg_duration_seconds": round(float(totals["avg_duration_seconds"] or 0.0), 2),
+            "top_repositories": repositories,
         }
 
     def mark_running(self, job_id: str) -> None:
@@ -292,7 +390,14 @@ class ReviewJobStore:
             chunk_count=report.chunk_count,
             omitted_sections=report.omitted_sections,
             redaction_count=report.redaction_count,
+            risk_level=report.risk_level,
+            risk_score=report.risk_score,
             superseded_by_head_sha="",
+            risk_reasons_json=json.dumps(report.risk_reasons),
+            findings_json=json.dumps([asdict(finding) for finding in report.findings]),
+            suggested_tests_json=json.dumps(report.suggested_tests),
+            analyzed_files_json=json.dumps(report.analyzed_files),
+            skipped_files_json=json.dumps(report.skipped_files),
             summary_points_json=json.dumps(report.summary_points),
             error_message="",
         )
@@ -305,6 +410,13 @@ class ReviewJobStore:
             updated_at=now,
             completed_at=now,
             superseded_by_head_sha="",
+            risk_level="medium",
+            risk_score=0,
+            risk_reasons_json="[]",
+            findings_json="[]",
+            suggested_tests_json="[]",
+            analyzed_files_json="[]",
+            skipped_files_json="[]",
             error_message=reason,
         )
 
@@ -316,6 +428,13 @@ class ReviewJobStore:
             updated_at=now,
             completed_at=now,
             superseded_by_head_sha="",
+            risk_level="medium",
+            risk_score=0,
+            risk_reasons_json="[]",
+            findings_json="[]",
+            suggested_tests_json="[]",
+            analyzed_files_json="[]",
+            skipped_files_json="[]",
             error_message=reason,
         )
 
@@ -328,6 +447,13 @@ class ReviewJobStore:
             completed_at=now,
             error_message=reason,
             superseded_by_head_sha=superseded_by_head_sha,
+            risk_level="medium",
+            risk_score=0,
+            risk_reasons_json="[]",
+            findings_json="[]",
+            suggested_tests_json="[]",
+            analyzed_files_json="[]",
+            skipped_files_json="[]",
         )
 
     def mark_failed(self, job_id: str, error_message: str) -> None:
@@ -338,6 +464,13 @@ class ReviewJobStore:
             updated_at=now,
             completed_at=now,
             superseded_by_head_sha="",
+            risk_level="medium",
+            risk_score=0,
+            risk_reasons_json="[]",
+            findings_json="[]",
+            suggested_tests_json="[]",
+            analyzed_files_json="[]",
+            skipped_files_json="[]",
             error_message=error_message,
         )
 
@@ -372,7 +505,14 @@ class ReviewJobStore:
                     updated_at = ?,
                     completed_at = ?,
                     error_message = ?,
-                    superseded_by_head_sha = ?
+                    superseded_by_head_sha = ?,
+                    risk_level = 'medium',
+                    risk_score = 0,
+                    risk_reasons_json = '[]',
+                    findings_json = '[]',
+                    suggested_tests_json = '[]',
+                    analyzed_files_json = '[]',
+                    skipped_files_json = '[]'
                 WHERE repo_full_name = ?
                   AND pull_number = ?
                   AND job_id != ?
@@ -428,8 +568,15 @@ def _row_to_job(row: sqlite3.Row) -> ReviewJob:
         chunk_count=row["chunk_count"],
         omitted_sections=row["omitted_sections"],
         redaction_count=row["redaction_count"],
+        risk_level=row["risk_level"],
+        risk_score=row["risk_score"],
         check_run_id=row["check_run_id"],
         superseded_by_head_sha=row["superseded_by_head_sha"],
+        risk_reasons_json=row["risk_reasons_json"],
+        findings_json=row["findings_json"],
+        suggested_tests_json=row["suggested_tests_json"],
+        analyzed_files_json=row["analyzed_files_json"],
+        skipped_files_json=row["skipped_files_json"],
         error_message=row["error_message"],
         summary_points_json=row["summary_points_json"],
     )

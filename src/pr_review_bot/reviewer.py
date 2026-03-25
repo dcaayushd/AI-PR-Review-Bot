@@ -12,6 +12,7 @@ from .git_utils import build_unified_diff
 from .llm_client import LLMClient
 from .redaction import redact_chunks, redact_pull_request_context, redact_repository_snippets
 from .repository_context import load_repository_snippets
+from .risk import assess_review_risk, route_review_settings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -49,12 +50,16 @@ def run_review(
             skipped_files=skipped_files,
             model_used=config.review.model,
             chunk_count=0,
+            risk_level="low",
+            risk_reasons=["no reviewable source changes"],
         )
 
+    risk_assessment = assess_review_risk(reviewable_patches)
+    review_settings = route_review_settings(config.review, config.routing, risk_assessment)
     chunks, omitted_sections = build_review_chunks(
         reviewable_patches,
-        max_chunk_chars=config.review.max_chunk_chars,
-        max_chunks=config.review.max_chunks,
+        max_chunk_chars=review_settings.max_chunk_chars,
+        max_chunks=review_settings.max_chunks,
     )
     repository_snippets = load_repository_snippets(repo_root, config.repository_context)
     safe_context, pr_redactions = redact_pull_request_context(pr_context, config.security)
@@ -62,7 +67,7 @@ def run_review(
     repository_snippets, snippet_redactions = redact_repository_snippets(repository_snippets, config.security)
     redaction_count = pr_redactions + chunk_redactions + snippet_redactions
     _raise_if_aborted(should_abort)
-    llm = LLMClient(config.review)
+    llm = LLMClient(review_settings)
 
     summary_points: list[str] = []
     findings: list[ReviewFinding] = []
@@ -81,9 +86,9 @@ def run_review(
         inline_comments.extend(chunk_inline_comments)
         suggested_tests.extend(chunk_tests)
 
-    findings = _dedupe_findings(findings)[: config.review.max_issues]
+    findings = _dedupe_findings(findings)[: review_settings.max_issues]
     changed_line_map = build_changed_line_map(reviewable_patches)
-    inline_comments = _filter_inline_comments(inline_comments, changed_line_map)[: config.review.max_inline_comments]
+    inline_comments = _filter_inline_comments(inline_comments, changed_line_map)[: review_settings.max_inline_comments]
     suggested_tests = _dedupe_strings(suggested_tests)[:8]
 
     report = ReviewReport(
@@ -100,11 +105,14 @@ def run_review(
         suggested_tests=suggested_tests,
         analyzed_files=[patch.path for patch in reviewable_patches],
         skipped_files=skipped_files,
-        provider_used=config.review.provider,
+        provider_used=review_settings.provider,
         model_used=", ".join(_dedupe_strings(models_used)),
         chunk_count=len(chunks),
         omitted_sections=omitted_sections,
         redaction_count=redaction_count,
+        risk_level=risk_assessment.level,
+        risk_score=risk_assessment.score,
+        risk_reasons=risk_assessment.reasons,
     )
     return report
 

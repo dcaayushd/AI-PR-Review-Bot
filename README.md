@@ -4,6 +4,8 @@ Production-grade AI pull request review bot built in Python.
 
 This repository is designed for the GitHub App model: you deploy one backend, install one GitHub App on many repositories, and the service reviews pull requests across all of them. It also keeps a local CLI path for single-repo testing and self-hosted experiments.
 
+It now also includes a built-in operator dashboard so the product feels like a complete review service, not just a webhook consumer.
+
 ## What This Repository Does
 
 When a pull request is opened, synchronized, reopened, or marked ready for review:
@@ -11,8 +13,9 @@ When a pull request is opened, synchronized, reopened, or marked ready for revie
 1. GitHub sends a webhook to this service.
 2. The service verifies the signature and creates a review job.
 3. The worker fetches the PR safely from `refs/pull/<number>/head`.
-4. The review engine chunks the diff, redacts likely secrets, loads repository context, and sends the review prompt to an LLM.
+4. The review engine chunks the diff, scores PR risk, redacts likely secrets, loads repository context, and sends the review prompt to an LLM.
 5. The bot posts a summary comment, optional inline review comments, and a GitHub check run back to the PR.
+6. The service dashboard shows queue pressure, recent jobs, provider usage, and persisted review details.
 
 ## Visual Overview
 
@@ -26,6 +29,7 @@ flowchart LR
     Service --> Checkout[Safe PR Checkout]
     Service --> Reviewer[Review Engine]
     Reviewer --> Diff[Diff Parser + Chunker]
+    Reviewer --> Risk[Risk Scoring + Routing]
     Reviewer --> Redaction[Secret Redaction]
     Reviewer --> Context[Repository Context Loader]
     Reviewer --> LLM[OpenAI or Gemini]
@@ -106,6 +110,7 @@ https://your-public-domain/webhooks/github
    - a summary PR comment
    - inline review comments on changed lines
    - a GitHub check run
+10. Open the service root URL in a browser to see the operator dashboard, risk mix, and recent job insights.
 
 ### Option 2: Local Single-Repo CLI Review
 
@@ -136,6 +141,23 @@ The bot behaves like a real PR review bot, not just a log printer.
 
 If `PUBLIC_BASE_URL` is set, the check run can also link back to this service's job detail endpoint.
 
+## Built-In Dashboard
+
+Open the service root URL:
+
+```text
+http://127.0.0.1:8000/
+```
+
+The dashboard provides:
+
+- live queue and worker pressure
+- recent jobs across repositories
+- provider usage mix
+- adaptive risk-routing mix and top repositories
+- persisted review detail pages for each job
+- check-run detail links when `PUBLIC_BASE_URL` is configured
+
 ## Repository Map
 
 If you are new to the codebase, this is the fastest way to orient yourself.
@@ -143,8 +165,10 @@ If you are new to the codebase, this is the fastest way to orient yourself.
 | Path | Responsibility | Open This When |
 | --- | --- | --- |
 | `src/pr_review_bot/server.py` | FastAPI app, webhooks, health/readiness, metrics | You want to understand the HTTP surface |
+| `src/pr_review_bot/dashboard.py` | HTML control plane and job detail views | You want the product-facing UI |
 | `src/pr_review_bot/review_service.py` | Background orchestration, queueing, cancellation, GitHub posting | You want the end-to-end job lifecycle |
 | `src/pr_review_bot/reviewer.py` | Diff review pipeline and report building | You want to understand how a PR becomes findings |
+| `src/pr_review_bot/risk.py` | PR risk scoring and adaptive review routing | You want to understand model escalation decisions |
 | `src/pr_review_bot/llm_client.py` | OpenAI/Gemini calls, retries, fallback logic | You want to change provider behavior |
 | `src/pr_review_bot/github_app.py` | GitHub App JWT and installation tokens | You are debugging auth |
 | `src/pr_review_bot/github_api.py` | Posting comments, reviews, check runs | You are debugging GitHub output |
@@ -180,6 +204,7 @@ Important runtime behavior:
 - newer commits on the same PR can supersede older queued or running jobs
 - queue limits protect LLM spend under webhook bursts
 - stale jobs can abort before posting outdated comments
+- low-risk changes can route to a lighter review profile while high-risk changes escalate reasoning and issue budgets
 - likely secrets are redacted before model calls
 
 ## Configuration
@@ -208,6 +233,7 @@ Installed repositories can customize:
 - model and fallback model
 - diff chunk sizing
 - inline comment and issue limits
+- adaptive risk routing behavior
 - ignore rules
 - repository context files
 - secret redaction behavior
@@ -219,10 +245,13 @@ For safety, repository config cannot redirect GitHub API hosts.
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /webhooks/github` | Receives GitHub App webhook deliveries |
+| `GET /` | HTML control plane dashboard |
+| `GET /dashboard` | Dashboard alias |
 | `GET /healthz` | Basic liveness probe |
 | `GET /readyz` | Queue-aware readiness probe |
 | `GET /jobs` | Recent jobs across all repositories |
 | `GET /jobs/{job_id}` | One job's status and summary |
+| `GET /jobs/{job_id}/view` | Human-friendly job detail page |
 | `GET /repos/{owner}/{repo}/pulls/{pull_number}/jobs` | Job history for a pull request |
 | `GET /metrics` | Prometheus-style metrics |
 
@@ -239,6 +268,12 @@ Then in another terminal:
 curl http://127.0.0.1:8000/healthz
 curl http://127.0.0.1:8000/readyz
 curl http://127.0.0.1:8000/metrics
+```
+
+And in a browser:
+
+```text
+http://127.0.0.1:8000/
 ```
 
 ## Security Notes

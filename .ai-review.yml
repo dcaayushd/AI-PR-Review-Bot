@@ -61,3 +61,12 @@ security:
     - "sk-[A-Za-z0-9_\\-]{20,}"
     - "gh[pousr]_[A-Za-z0-9_]{20,}"
     - "-----BEGIN [A-Z ]+PRIVATE KEY-----[\\s\\S]+?-----END [A-Z ]+PRIVATE KEY-----"
+
+routing:
+  enabled: true
+  use_fallback_for_low_risk: true
+  low_risk_reasoning_effort: low
+  medium_risk_reasoning_effort: medium
+  high_risk_reasoning_effort: high
+  high_risk_max_issues: 24
+  high_risk_max_inline_comments: 10

@@ -82,3 +82,6 @@ class ReviewReport:
     chunk_count: int = 0
     omitted_sections: int = 0
     redaction_count: int = 0
+    risk_level: str = "medium"
+    risk_score: int = 0
+    risk_reasons: list[str] = field(default_factory=list)

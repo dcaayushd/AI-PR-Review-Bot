@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pr_review_bot.domain import PullRequestContext, ReviewReport
+from pr_review_bot.domain import PullRequestContext, ReviewFinding, ReviewReport
 from pr_review_bot.storage import ReviewJobStore
 from pr_review_bot.webhooks import ReviewRequest
 
@@ -39,11 +39,27 @@ class StorageTests(unittest.TestCase):
 
             report = ReviewReport(
                 summary_points=["Analyzed 2 files."],
+                findings=[
+                    ReviewFinding(
+                        title="Missing validation",
+                        severity="critical",
+                        category="security",
+                        why_it_matters="Input can reach a sensitive path unchecked.",
+                        suggested_fix="Validate the payload before use.",
+                        file_path="src/app.py",
+                        line=14,
+                    )
+                ],
+                suggested_tests=["Add a malformed payload regression test."],
                 analyzed_files=["src/app.py", "tests/test_app.py"],
+                skipped_files=["assets/logo.png (ignored)"],
                 provider_used="gemini",
                 model_used="gpt-5.4",
                 chunk_count=2,
                 redaction_count=3,
+                risk_level="high",
+                risk_score=8,
+                risk_reasons=["changes security-sensitive or auth-related paths"],
             )
             store.mark_completed(job.job_id, report)
             completed = store.get_job(job.job_id)
@@ -53,10 +69,21 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(completed.provider, "gemini")
             self.assertEqual(completed.analyzed_files_count, 2)
             self.assertEqual(completed.redaction_count, 3)
+            persisted = completed.as_dict()
+            self.assertEqual(len(persisted["findings"]), 1)
+            self.assertEqual(persisted["findings"][0]["title"], "Missing validation")
+            self.assertEqual(persisted["suggested_tests"], ["Add a malformed payload regression test."])
+            self.assertEqual(persisted["analyzed_files"], ["src/app.py", "tests/test_app.py"])
+            self.assertEqual(persisted["skipped_files"], ["assets/logo.png (ignored)"])
+            self.assertEqual(persisted["risk_level"], "high")
+            self.assertEqual(persisted["risk_reasons"], ["changes security-sensitive or auth-related paths"])
 
             summary = store.metrics_summary()
             self.assertEqual(summary["total_jobs"], 1)
             self.assertEqual(summary["total_redactions"], 3)
+            self.assertEqual(summary["active_repositories"], 1)
+            self.assertIn("gemini", summary["counts_by_provider"])
+            self.assertEqual(summary["counts_by_risk"]["high"], 1)
 
     def test_create_or_get_job_reuses_active_job_for_same_head(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

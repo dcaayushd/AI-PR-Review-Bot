@@ -5,8 +5,9 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
+from .dashboard import render_dashboard_page, render_job_detail_page
 from .review_service import ReviewService
 from .runtime import AppSettings
 from .storage import ReviewJobStore
@@ -27,7 +28,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="AI PR Review",
-        version="0.3.0",
+        version="0.4.0",
         summary="GitHub App webhook service for AI pull request reviews",
     )
     app.state.settings = runtime_settings
@@ -41,6 +42,21 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     @app.get("/healthz")
     async def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/", response_class=HTMLResponse)
+    async def dashboard() -> HTMLResponse:
+        return HTMLResponse(
+            render_dashboard_page(
+                app_version=app.version,
+                runtime_snapshot=service.runtime_snapshot(),
+                metrics_summary=store.metrics_summary(),
+                recent_jobs=store.list_jobs(limit=25),
+            )
+        )
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def dashboard_alias() -> HTMLResponse:
+        return await dashboard()
 
     @app.get("/readyz")
     async def readiness() -> JSONResponse:
@@ -60,6 +76,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         if not job:
             raise HTTPException(status_code=404, detail="Job not found.")
         return job.as_dict()
+
+    @app.get("/jobs/{job_id}/view", response_class=HTMLResponse)
+    async def get_job_view(job_id: str) -> HTMLResponse:
+        job = store.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        return HTMLResponse(render_job_detail_page(app_version=app.version, job=job))
 
     @app.get("/jobs")
     async def list_jobs(limit: int = 20) -> list[dict[str, Any]]:
@@ -81,6 +104,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             f'ai_pr_review_total_findings {summary["total_findings"]}',
             f'ai_pr_review_total_inline_comments {summary["total_inline_comments"]}',
             f'ai_pr_review_total_redactions {summary["total_redactions"]}',
+            f'ai_pr_review_active_repositories {summary["active_repositories"]}',
+            f'ai_pr_review_avg_duration_seconds {summary["avg_duration_seconds"]}',
             f'ai_pr_review_running_jobs {snapshot["running_jobs"]}',
             f'ai_pr_review_queued_jobs {snapshot["queued_jobs"]}',
             f'ai_pr_review_max_parallel_reviews {snapshot["max_parallel_reviews"]}',
@@ -90,6 +115,10 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         ]
         for status, count in sorted(summary["counts_by_status"].items()):
             lines.append(f'ai_pr_review_jobs_status{{status="{status}"}} {count}')
+        for provider, count in sorted(summary["counts_by_provider"].items()):
+            lines.append(f'ai_pr_review_jobs_provider{{provider="{provider}"}} {count}')
+        for risk_level, count in sorted(summary["counts_by_risk"].items()):
+            lines.append(f'ai_pr_review_jobs_risk{{level="{risk_level}"}} {count}')
         return PlainTextResponse("\n".join(lines) + "\n")
 
     @app.post("/webhooks/github")
@@ -138,7 +167,7 @@ def _create_default_app() -> FastAPI:
         LOGGER.warning("Server app loaded in placeholder mode: %s", exc)
         placeholder = FastAPI(
             title="AI PR Review",
-            version="0.3.0",
+            version="0.4.0",
             summary="Placeholder app until runtime configuration is valid",
         )
 
@@ -157,6 +186,13 @@ def _create_default_app() -> FastAPI:
                     "detail": str(exc),
                 },
                 status_code=503,
+            )
+
+        @placeholder.get("/", response_class=HTMLResponse)
+        async def dashboard() -> HTMLResponse:
+            return HTMLResponse(
+                "<html><body><h1>AI PR Review</h1><p>Server is misconfigured. "
+                f"{str(exc)}</p></body></html>"
             )
 
         return placeholder
