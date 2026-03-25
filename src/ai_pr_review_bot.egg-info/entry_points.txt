@@ -1,0 +1,3 @@
+[console_scripts]
+ai-pr-review = pr_review_bot.__main__:main
+ai-pr-review-server = pr_review_bot.server:run

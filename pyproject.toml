@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-pr-review-bot"
+version = "0.1.0"
+description = "Production-grade AI-powered GitHub pull request review bot"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "openai>=1.66.0,<3",
+  "pydantic>=2.7,<3",
+  "PyJWT[crypto]>=2.9,<3",
+  "PyYAML>=6.0.1,<7",
+  "uvicorn>=0.30,<1",
+]
+
+[project.scripts]
+ai-pr-review = "pr_review_bot.__main__:main"
+ai-pr-review-server = "pr_review_bot.server:run"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

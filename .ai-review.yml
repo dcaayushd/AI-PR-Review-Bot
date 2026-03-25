@@ -1,0 +1,53 @@
+review:
+  model: gpt-5.4
+  fallback_model: gpt-5-mini
+  reasoning_effort: medium
+  temperature: 0.15
+  max_output_tokens: 3500
+  max_issues: 18
+  max_inline_comments: 8
+  max_chunk_chars: 18000
+  max_chunks: 12
+  retry_attempts: 3
+
+diff:
+  context_lines: 3
+  ignore:
+    - "**/.git/**"
+    - "**/.next/**"
+    - "**/__pycache__/**"
+    - "**/coverage/**"
+    - "**/dist/**"
+    - "**/build/**"
+    - "**/node_modules/**"
+    - "**/*.lock"
+    - "**/package-lock.json"
+    - "**/pnpm-lock.yaml"
+    - "**/yarn.lock"
+    - "**/*.min.js"
+    - "**/*.min.css"
+    - "**/*.png"
+    - "**/*.jpg"
+    - "**/*.jpeg"
+    - "**/*.gif"
+    - "**/*.pdf"
+
+github:
+  api_url: https://api.github.com
+  api_version: "2026-03-10"
+  update_summary_comment: true
+  create_inline_review: true
+  request_timeout_seconds: 30
+  retry_attempts: 3
+
+repository_context:
+  enabled: true
+  max_files: 6
+  max_chars_per_file: 3000
+  include:
+    - "README.md"
+    - "pyproject.toml"
+    - "package.json"
+    - "requirements*.txt"
+    - ".github/workflows/*.yml"
+
